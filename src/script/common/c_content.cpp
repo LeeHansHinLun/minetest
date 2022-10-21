@@ -42,7 +42,7 @@ struct EnumString es_TileAnimationType[] =
 	{TAT_NONE, "none"},
 	{TAT_VERTICAL_FRAMES, "vertical_frames"},
 	{TAT_SHEET_2D, "sheet_2d"},
-	{0, NULL},
+	{0, nullptr},
 };
 
 /******************************************************************************/
@@ -108,6 +108,19 @@ void read_item_definition(lua_State* L, int index,
 		lua_pop(L, 1);
 		lua_getfield(L, -1, "place_failed");
 		read_soundspec(L, -1, def.sound_place_failed);
+		lua_pop(L, 1);
+	}
+	lua_pop(L, 1);
+
+	// No, this is not a mistake. Item sounds are in "sound", node sounds in "sounds".
+	lua_getfield(L, index, "sound");
+	if (!lua_isnil(L, -1)) {
+		luaL_checktype(L, -1, LUA_TTABLE);
+		lua_getfield(L, -1, "punch_use");
+		read_soundspec(L, -1, def.sound_use);
+		lua_pop(L, 1);
+		lua_getfield(L, -1, "punch_use_air");
+		read_soundspec(L, -1, def.sound_use_air);
 		lua_pop(L, 1);
 	}
 	lua_pop(L, 1);
@@ -196,6 +209,9 @@ void read_object_properties(lua_State *L, int index,
 	int hp_max = 0;
 	if (getintfield(L, -1, "hp_max", hp_max)) {
 		prop->hp_max = (u16)rangelim(hp_max, 0, U16_MAX);
+		// hp_max = 0 is sometimes used as a hack to keep players dead, only validate for entities
+		if (prop->hp_max == 0 && sao->getType() != ACTIVEOBJECT_TYPE_PLAYER)
+			throw LuaError("The hp_max property may not be 0 for entities!");
 
 		if (prop->hp_max < sao->getHP()) {
 			PlayerHPChangeReason reason(PlayerHPChangeReason::SET_HP_MAX);
@@ -478,7 +494,7 @@ TileDef read_tiledef(lua_State *L, int index, u8 drawtype)
 	else if(lua_istable(L, index))
 	{
 		// name="default_lava.png"
-		tiledef.name = "";
+		tiledef.name.clear();
 		getstringfield(L, index, "name", tiledef.name);
 		getstringfield(L, index, "image", tiledef.name); // MaterialSpec compat.
 		tiledef.backface_culling = getboolfield_default(
@@ -550,13 +566,6 @@ void read_content_features(lua_State *L, ContentFeatures &f, int index)
 
 	// tiles = {}
 	lua_getfield(L, index, "tiles");
-	// If nil, try the deprecated name "tile_images" instead
-	if(lua_isnil(L, -1)){
-		lua_pop(L, 1);
-		warn_if_field_exists(L, index, "tile_images",
-				"Deprecated; new name is \"tiles\".");
-		lua_getfield(L, index, "tile_images");
-	}
 	if(lua_istable(L, -1)){
 		int table = lua_gettop(L);
 		lua_pushnil(L);
@@ -613,13 +622,6 @@ void read_content_features(lua_State *L, ContentFeatures &f, int index)
 
 	// special_tiles = {}
 	lua_getfield(L, index, "special_tiles");
-	// If nil, try the deprecated name "special_materials" instead
-	if(lua_isnil(L, -1)){
-		lua_pop(L, 1);
-		warn_if_field_exists(L, index, "special_materials",
-				"Deprecated; new name is \"special_tiles\".");
-		lua_getfield(L, index, "special_materials");
-	}
 	if(lua_istable(L, -1)){
 		int table = lua_gettop(L);
 		lua_pushnil(L);
@@ -684,7 +686,8 @@ void read_content_features(lua_State *L, ContentFeatures &f, int index)
 			!(f.param_type_2 == CPT2_COLOR ||
 			f.param_type_2 == CPT2_COLORED_FACEDIR ||
 			f.param_type_2 == CPT2_COLORED_WALLMOUNTED ||
-			f.param_type_2 == CPT2_COLORED_DEGROTATE))
+			f.param_type_2 == CPT2_COLORED_DEGROTATE ||
+			f.param_type_2 == CPT2_COLORED_4DIR))
 		warningstream << "Node " << f.name.c_str()
 			<< " has a palette, but not a suitable paramtype2." << std::endl;
 
@@ -1070,16 +1073,16 @@ void read_server_sound_params(lua_State *L, int index,
 		if(!lua_isnil(L, -1)){
 			v3f p = read_v3f(L, -1)*BS;
 			params.pos = p;
-			params.type = ServerPlayingSound::SSP_POSITIONAL;
+			params.type = SoundLocation::Position;
 		}
 		lua_pop(L, 1);
 		lua_getfield(L, index, "object");
 		if(!lua_isnil(L, -1)){
-			ObjectRef *ref = ObjectRef::checkobject(L, -1);
+			ObjectRef *ref = ModApiBase::checkObject<ObjectRef>(L, -1);
 			ServerActiveObject *sao = ObjectRef::getobject(ref);
 			if(sao){
 				params.object = sao->getId();
-				params.type = ServerPlayingSound::SSP_OBJECT;
+				params.type = SoundLocation::Object;
 			}
 		}
 		lua_pop(L, 1);
@@ -1172,43 +1175,27 @@ NodeBox read_nodebox(lua_State *L, int index)
 }
 
 /******************************************************************************/
-MapNode readnode(lua_State *L, int index, const NodeDefManager *ndef)
+MapNode readnode(lua_State *L, int index)
 {
-	lua_getfield(L, index, "name");
-	if (!lua_isstring(L, -1))
-		throw LuaError("Node name is not set or is not a string!");
-	std::string name = lua_tostring(L, -1);
-	lua_pop(L, 1);
-
-	u8 param1 = 0;
-	lua_getfield(L, index, "param1");
-	if (!lua_isnil(L, -1))
-		param1 = lua_tonumber(L, -1);
-	lua_pop(L, 1);
-
-	u8 param2 = 0;
-	lua_getfield(L, index, "param2");
-	if (!lua_isnil(L, -1))
-		param2 = lua_tonumber(L, -1);
-	lua_pop(L, 1);
-
-	content_t id = CONTENT_IGNORE;
-	if (!ndef->getId(name, id))
-		throw LuaError("\"" + name + "\" is not a registered node!");
-
-	return {id, param1, param2};
+	lua_pushvalue(L, index);
+	lua_rawgeti(L, LUA_REGISTRYINDEX, CUSTOM_RIDX_READ_NODE);
+	lua_insert(L, -2);
+	lua_call(L, 1, 3);
+	content_t content = lua_tointeger(L, -3);
+	u8 param1 = lua_tointeger(L, -2);
+	u8 param2 = lua_tointeger(L, -1);
+	lua_pop(L, 3);
+	return MapNode(content, param1, param2);
 }
 
 /******************************************************************************/
-void pushnode(lua_State *L, const MapNode &n, const NodeDefManager *ndef)
+void pushnode(lua_State *L, const MapNode &n)
 {
-	lua_createtable(L, 0, 3);
-	lua_pushstring(L, ndef->get(n).name.c_str());
-	lua_setfield(L, -2, "name");
+	lua_rawgeti(L, LUA_REGISTRYINDEX, CUSTOM_RIDX_PUSH_NODE);
+	lua_pushinteger(L, n.getContent());
 	lua_pushinteger(L, n.getParam1());
-	lua_setfield(L, -2, "param1");
 	lua_pushinteger(L, n.getParam2());
-	lua_setfield(L, -2, "param2");
+	lua_call(L, 3, 1);
 }
 
 /******************************************************************************/
@@ -1261,7 +1248,7 @@ ItemStack read_item(lua_State* L, int index, IItemDefManager *idef)
 
 	if (lua_isuserdata(L, index)) {
 		// Convert from LuaItemStack
-		LuaItemStack *o = LuaItemStack::checkobject(L, index);
+		LuaItemStack *o = ModApiBase::checkObject<LuaItemStack>(L, index);
 		return o->getItem();
 	}
 
@@ -2156,4 +2143,36 @@ void push_collision_move_result(lua_State *L, const collisionMoveResult &res)
 	}
 	lua_setfield(L, -2, "collisions");
 	/**/
+}
+
+
+void push_mod_spec(lua_State *L, const ModSpec &spec, bool include_unsatisfied)
+{
+	lua_newtable(L);
+
+	lua_pushstring(L, spec.name.c_str());
+	lua_setfield(L, -2, "name");
+
+	lua_pushstring(L, spec.author.c_str());
+	lua_setfield(L, -2, "author");
+
+	lua_pushinteger(L, spec.release);
+	lua_setfield(L, -2, "release");
+
+	lua_pushstring(L, spec.desc.c_str());
+	lua_setfield(L, -2, "description");
+
+	lua_pushstring(L, spec.path.c_str());
+	lua_setfield(L, -2, "path");
+
+	lua_pushstring(L, spec.virtual_path.c_str());
+	lua_setfield(L, -2, "virtual_path");
+
+	lua_newtable(L);
+	int i = 1;
+	for (const auto &dep : spec.unsatisfied_depends) {
+		lua_pushstring(L, dep.c_str());
+		lua_rawseti(L, -2, i++);
+	}
+	lua_setfield(L, -2, "unsatisfied_depends");
 }

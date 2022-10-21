@@ -313,7 +313,7 @@ static scene::SMesh *createSpecialNodeMesh(Client *client, MapNode n,
 	std::vector<ItemPartColor> *colors, const ContentFeatures &f)
 {
 	MeshMakeData mesh_make_data(client, false);
-	MeshCollector collector;
+	MeshCollector collector(v3f(0.0f * BS));
 	mesh_make_data.setSmoothLighting(false);
 	MapblockMeshGenerator gen(&mesh_make_data, &collector,
 		client->getSceneManager()->getMeshManipulator());
@@ -556,10 +556,6 @@ void WieldMeshSceneNode::changeToMesh(scene::IMesh *mesh)
 	if (m_shadow) {
 		// Add mesh to shadow caster
 		m_shadow->addNodeToShadowList(m_meshnode);
-
-		// Set shadow texture
-		for (u32 i = 0; i < m_meshnode->getMaterialCount(); i++)
-			m_meshnode->setMaterialTexture(3, m_shadow->get_texture());
 	}
 }
 

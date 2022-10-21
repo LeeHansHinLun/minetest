@@ -99,11 +99,7 @@ struct MediaInfo
 // Combines the pure sound (SimpleSoundSpec) with positional information
 struct ServerPlayingSound
 {
-	enum Type {
-		SSP_LOCAL,
-		SSP_POSITIONAL,
-		SSP_OBJECT
-	} type = SSP_LOCAL;
+	SoundLocation type = SoundLocation::Local;
 
 	float gain = 1.0f; // for amplification of the base sound
 	float max_hear_distance = 32 * BS;
@@ -360,9 +356,6 @@ public:
 			size_t wanted_mode);
 
 	void sendDetachedInventories(session_t peer_id, bool incremental);
-
-	virtual bool registerModStorage(ModMetadata *storage);
-	virtual void unregisterModStorage(const std::string &name);
 
 	bool joinModChannel(const std::string &channel);
 	bool leaveModChannel(const std::string &channel);
@@ -699,7 +692,6 @@ private:
 	s32 m_next_sound_id = 0; // positive values only
 	s32 nextSoundId();
 
-	std::unordered_map<std::string, ModMetadata *> m_mod_storages;
 	ModMetadataDatabase *m_mod_storage_database = nullptr;
 	float m_mod_storage_save_timer = 10.0f;
 
